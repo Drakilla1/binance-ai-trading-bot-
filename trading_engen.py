@@ -1,83 +1,96 @@
+
 import os
 import time
+import json
 import logging
+from datetime import datetime, timezone
 from binance.client import Client
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+    format="%(asctime)s %(levelname)s: %(message)s"
 )
-
-logger = logging.getLogger("trading_engine")
-
-API_KEY = os.getenv("BINANCE_API_KEY", "")
-API_SECRET = os.getenv("BINANCE_API_SECRET", "")
+logger = logging.getLogger("paper_bot")
 
 SYMBOL = "BTCUSDT"
-INTERVAL = Client.KLINE_INTERVAL_1MINUTE
-CHECK_INTERVAL = 60
+STARTING_BALANCE = 100.0
+TRADE_PERCENT = 0.20
+STOP_LOSS = 0.015
+TAKE_PROFIT = 0.03
+CHECK_INTERVAL = 30
+STATE_FILE = "paper_state.json"
 
-# SAFETY: This bot is in signal-only mode.
-# It will NOT place real trades.
-DRY_RUN = True
+# Read-only market data connection.
+client = Client("", "")
 
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {
+        "balance": STARTING_BALANCE,
+        "btc": 0.0,
+        "entry": 0.0,
+        "trades": 0
+    }
 
-def get_client():
-    return Client(API_KEY, API_SECRET)
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
 
-
-def get_market_data(client):
-    candles = client.get_klines(
-        symbol=SYMBOL,
-        interval=INTERVAL,
-        limit=100
-    )
-
-    closes = [float(candle[4]) for candle in candles]
-    return closes
-
-
-def calculate_signal(closes):
-    if len(closes) < 50:
-        return "WAIT"
-
-    short_average = sum(closes[-9:]) / 9
-    long_average = sum(closes[-50:]) / 50
-
-    if short_average > long_average:
-        return "BUY SIGNAL"
-
-    elif short_average < long_average:
-        return "SELL SIGNAL"
-
-    return "WAIT"
-
+def get_price():
+    ticker = client.get_symbol_ticker(symbol=SYMBOL)
+    return float(ticker["price"])
 
 def run_trading_engine():
-    logger.info("Binance AI Trading Bot starting...")
-    logger.info("Mode: SIGNAL ONLY | No real orders")
-
-    client = get_client()
+    state = load_state()
+    logger.info("PAPER TRADING STARTED | Balance: %.2f USDT",
+                state["balance"])
 
     while True:
         try:
-            closes = get_market_data(client)
-            price = closes[-1]
+            price = get_price()
+            logger.info("BTC price: %.2f USDT", price)
 
-            signal = calculate_signal(closes)
+            if state["btc"] > 0:
+                change = (price - state["entry"]) / state["entry"]
 
-            logger.info(
-                "Symbol: %s | Price: %.2f | Signal: %s",
-                SYMBOL,
-                price,
-                signal
-            )
+                if change <= -STOP_LOSS or change >= TAKE_PROFIT:
+                    proceeds = state["btc"] * price
+                    state["balance"] += proceeds
+                    logger.info(
+                        "SIMULATED SELL | Price %.2f | P/L %.2f USDT",
+                        price,
+                        proceeds - state["btc"] * state["entry"]
+                    )
+                    state["btc"] = 0.0
+                    state["entry"] = 0.0
+                    state["trades"] += 1
 
-            if DRY_RUN:
-                logger.info("Dry-run mode enabled. No orders placed.")
+            elif state["balance"] >= 10:
+                # Simple aggressive momentum signal.
+                candles = client.get_klines(
+                    symbol=SYMBOL,
+                    interval=Client.KLINE_INTERVAL_1MINUTE,
+                    limit=3
+                )
+                previous = float(candles[-2][4])
+                current = float(candles[-1][4])
 
+                if current > previous:
+                    investment = state["balance"] * TRADE_PERCENT
+                    state["btc"] = investment / price
+                    state["balance"] -= investment
+                    state["entry"] = price
+                    logger.info(
+                        "SIMULATED BUY | BTC %.8f | Price %.2f",
+                        state["btc"], price
+                    )
+
+            save_state(state)
             time.sleep(CHECK_INTERVAL)
 
-        except Exception as e:
-            logger.error("Trading engine error: %s", e)
-            time.sleep(15)
+        except Exception:
+            logger.exception("Trading cycle error")
+            time.sleep(CHECK_INTERVAL)
+
