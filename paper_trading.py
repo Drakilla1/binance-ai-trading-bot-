@@ -1,94 +1,176 @@
 
-import os
+
+import json
 import logging
+import os
+from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 
 from binance.client import Client
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("paper_trading")
-
-API_KEY = os.getenv("BINANCE_API_KEY", "")
-API_SECRET = os.getenv("BINANCE_API_SECRET", "")
-
-client = Client(API_KEY, API_SECRET)
-
-# PAPER TRADING ONLY
-INITIAL_BALANCE = Decimal("100")
-QUOTE_BALANCE = INITIAL_BALANCE
-BTC_BALANCE = Decimal("0")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+log = logging.getLogger("paper_trading")
 
 SYMBOL = "BTCUSDT"
 INTERVAL = Client.KLINE_INTERVAL_5MINUTE
 
+STARTING_BALANCE = Decimal("100")
 RISK_PER_TRADE = Decimal("0.01")
 DAILY_LOSS_LIMIT = Decimal("0.03")
-
 STOP_LOSS = Decimal("0.01")
 TAKE_PROFIT = Decimal("0.02")
+FEE_RATE = Decimal("0.001")
 
-def get_market_price():
-    ticker = client.get_symbol_ticker(symbol=SYMBOL)
-    return Decimal(ticker["price"])
+STATE_FILE = Path("paper_state.json")
 
-def get_signal():
+# Public market data only. No exchange orders.
+client = Client("", "")
+
+
+def load_state():
+    if STATE_FILE.exists():
+        return json.loads(STATE_FILE.read_text())
+
+    return {
+        "balance": str(STARTING_BALANCE),
+        "btc": "0",
+        "entry": None,
+        "day": datetime.now(timezone.utc).date().isoformat(),
+        "day_start": str(STARTING_BALANCE),
+        "trades": 0
+    }
+
+
+def save_state(state):
+    STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def ema(values, period):
+    result = values[0]
+    alpha = Decimal("2") / Decimal(period + 1)
+
+    for value in values[1:]:
+        result = alpha * value + (1 - alpha) * result
+
+    return result
+
+
+def rsi(values, period=14):
+    changes = [values[i] - values[i - 1]
+               for i in range(1, len(values))]
+
+    gains = [max(change, Decimal("0")) for change in changes]
+    losses = [max(-change, Decimal("0")) for change in changes]
+
+    avg_gain = sum(gains[-period:]) / Decimal(period)
+    avg_loss = sum(losses[-period:]) / Decimal(period)
+
+    if avg_loss == 0:
+        return Decimal("100")
+
+    rs = avg_gain / avg_loss
+    return Decimal("100") - (
+        Decimal("100") / (Decimal("1") + rs)
+    )
+
+
+def market_data():
     candles = client.get_klines(
         symbol=SYMBOL,
         interval=INTERVAL,
-        limit=30
+        limit=60
     )
 
+    # Ignore the currently forming candle.
     closes = [Decimal(c[4]) for c in candles[:-1]]
 
     if len(closes) < 22:
-        return "HOLD"
+        raise RuntimeError("Not enough market data")
 
-    ema9 = sum(closes[-9:]) / Decimal("9")
-    ema21 = sum(closes[-21:]) / Decimal("21")
+    return closes, closes[-1]
 
-    if ema9 > ema21:
-        return "BUY"
-    elif ema9 < ema21:
-        return "SELL"
 
-    return "HOLD"
+def run():
+    state = load_state()
 
-def run_paper_trading():
-    global QUOTE_BALANCE, BTC_BALANCE
+    closes, price = market_data()
 
-    entry_price = None
+    balance = Decimal(state["balance"])
+    btc = Decimal(state["btc"])
+    entry = (
+        Decimal(state["entry"])
+        if state["entry"] else None
+    )
 
-    logger.info("Starting BTC/USDT paper trading")
-    logger.info("Virtual balance: %s USDT", QUOTE_BALANCE)
+    today = datetime.now(timezone.utc).date().isoformat()
 
-    price = get_market_price()
-    signal = get_signal()
+    if state["day"] != today:
+        state["day"] = today
+        state["day_start"] = str(balance + btc * price)
 
-    if signal == "BUY" and BTC_BALANCE == 0:
-        risk_amount = QUOTE_BALANCE * RISK_PER_TRADE
-        position_value = min(
-            QUOTE_BALANCE,
-            risk_amount / STOP_LOSS
-        )
+    day_start = Decimal(state["day_start"])
+    equity = balance + btc * price
 
-        if position_value > 0:
-            BTC_BALANCE = position_value / price
-            QUOTE_BALANCE -= position_value
-            entry_price = price
+    daily_loss = max(
+        Decimal("0"),
+        (day_start - equity) / day_start
+    )
 
-            logger.info("SIMULATED BUY at %s", price)
+    if daily_loss >= DAILY_LOSS_LIMIT:
+        log.warning("Daily loss limit reached. No new trades.")
+        save_state(state)
+        return
 
-    elif signal == "SELL" and BTC_BALANCE > 0:
-        QUOTE_BALANCE += BTC_BALANCE * price
-        BTC_BALANCE = Decimal("0")
-        entry_price = None
+    fast = ema(closes[-30:], 9)
+    slow = ema(closes[-30:], 21)
+    momentum = rsi(closes)
 
-        logger.info("SIMULATED SELL at %s", price)
+    log.info(
+        "Price=%s EMA9=%s EMA21=%s RSI=%s Equity=%s",
+        price, fast, slow, momentum, equity
+    )
 
-    logger.info("Price: %s", price)
-    logger.info("USDT balance: %s", QUOTE_BALANCE)
-    logger.info("BTC balance: %s", BTC_BALANCE)
+    if btc > 0 and entry:
+        change = (price - entry) / entry
+
+        if change <= -STOP_LOSS or change >= TAKE_PROFIT:
+            balance += btc * price * (1 - FEE_RATE)
+            log.info("SIMULATED EXIT at %s", price)
+            btc = Decimal("0")
+            entry = None
+
+    elif btc == 0:
+        if fast > slow and momentum > 50:
+            risk = equity * RISK_PER_TRADE
+            position_value = min(
+                balance,
+                risk / STOP_LOSS
+            )
+
+            if position_value > 0:
+                fee = position_value * FEE_RATE
+                btc = (position_value - fee) / price
+                balance -= position_value
+                entry = price
+                state["trades"] += 1
+
+                log.info("SIMULATED BUY at %s", price)
+
+    state["balance"] = str(balance)
+    state["btc"] = str(btc)
+    state["entry"] = str(entry) if entry else None
+
+    save_state(state)
+
+    log.info(
+        "Simulation complete. USDT=%s BTC=%s",
+        balance, btc
+    )
+
 
 if __name__ == "__main__":
-    run_paper_trading()
-
+    run()
