@@ -1,62 +1,6 @@
-
-name: Binance AI Bot - Paper Trading
-
-on:
-  push:
-    branches: [main]
-
-  workflow_dispatch:
-    inputs:
-      run_paper_bot:
-        description: "Start paper trading"
-        required: true
-        type: boolean
-        default: false
-
-permissions:
-  contents: read
-
-concurrency:
-  group: binance-paper-bot
-  cancel-in-progress: false
-
-jobs:
-  bot-check:
-    name: Validate Trading Bot
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install python-binance
-
-      - name: Check bot syntax
-        run: |
-          python -m py_compile bot.py trading_engine.py
-
-      - name: Confirm paper trading mode
-        run: |
-          echo "BTC/USDT paper trading configuration"
-          echo "Starting balance: 100 USDT"
-          echo "Real-money trading: OFF"
-
   paper-trading:
-    name: Controlled Paper Trading
-    needs: bot-check
-    if: github.event_name == 'workflow_dispatch' && inputs.run_paper_bot
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -67,13 +11,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install python-binance
+        run: pip install python-binance
 
-      - name: Start paper trading
+      - name: Run paper trading
         env:
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
           PAPER_TRADING: "true"
-        run: |
-          python -u trading_engine.py
-
+        run: python main.py
