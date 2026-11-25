@@ -1,150 +1,131 @@
 
-
-import os
-import json
-import time
 import logging
-from decimal import Decimal
-from collections import deque
 from binance.client import Client
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("BTC_BOT")
-
+# PAPER TRADING ONLY
 SYMBOL = "BTCUSDT"
-STARTING_BALANCE = Decimal("100")
-TRADE_RISK = Decimal("0.01")
-STOP_LOSS = Decimal("0.015")
-TAKE_PROFIT = Decimal("0.03")
-DAILY_LOSS_LIMIT = Decimal("0.05")
-FEE_RATE = Decimal("0.001")
-STATE_FILE = "paper_state.json"
+INTERVAL = Client.KLINE_INTERVAL_15MINUTE
+STARTING_BALANCE = 100.0
+RISK_PERCENT = 1.0
+STOP_LOSS_PERCENT = 1.0
+TAKE_PROFIT_PERCENT = 2.0
 
-balance = STARTING_BALANCE
-btc = Decimal("0")
-entry_price = None
-prices = deque(maxlen=30)
-trades = []
-daily_start_balance = STARTING_BALANCE
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s"
+)
+logger = logging.getLogger("BTC_AI_BOT")
 
-def save_state():
-    data = {
-        "balance": str(balance),
-        "btc": str(btc),
-        "entry_price": str(entry_price) if entry_price else None,
-        "trades": trades,
-        "daily_start_balance": str(daily_start_balance)
-    }
-    with open(STATE_FILE, "w") as file:
-        json.dump(data, file, indent=2)
 
-def load_state():
-    global balance, btc, entry_price
-    global trades, daily_start_balance
+def ema(values, period):
+    multiplier = 2 / (period + 1)
+    result = values[0]
 
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as file:
-            data = json.load(file)
-
-        balance = Decimal(data["balance"])
-        btc = Decimal(data["btc"])
-        entry_price = (
-            Decimal(data["entry_price"])
-            if data["entry_price"] else None
-        )
-        trades = data["trades"]
-        daily_start_balance = Decimal(
-            data["daily_start_balance"]
+    for price in values[1:]:
+        result = (price * multiplier) + (
+            result * (1 - multiplier)
         )
 
-def get_price(client):
-    result = client.get_symbol_ticker(symbol=SYMBOL)
-    return Decimal(result["price"])
+    return result
+
+
+def calculate_rsi(prices, period=14):
+    changes = [
+        prices[i] - prices[i - 1]
+        for i in range(1, len(prices))
+    ]
+
+    gains = [max(change, 0) for change in changes]
+    losses = [max(-change, 0) for change in changes]
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+        avg_gain = (
+            avg_gain * (period - 1) + gains[i]
+        ) / period
+        avg_loss = (
+            avg_loss * (period - 1) + losses[i]
+        ) / period
+
+    if avg_loss == 0:
+        return 100.0
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
 
 def run_trading_engine():
-    global balance, btc, entry_price
+    logger.info("BTC/USDT PAPER TRADING BOT STARTED")
 
-    load_state()
-    client = Client()
+    try:
+        # Public market data only. No trading credentials.
+        client = Client()
 
-    log.info("BTC/USDT PAPER BOT STARTED")
-    log.info("Balance: %s USDT", balance)
+        candles = client.get_klines(
+            symbol=SYMBOL,
+            interval=INTERVAL,
+            limit=100
+        )
 
-    while True:
-        try:
-            price = get_price(client)
+        # Exclude the potentially unfinished candle.
+        candles = candles[:-1]
 
-            equity = balance + btc * price
-            daily_loss = max(
-                Decimal("0"),
-                daily_start_balance - equity
-            )
+        prices = [float(candle[4]) for candle in candles]
 
-            if daily_loss >= (
-                daily_start_balance * DAILY_LOSS_LIMIT
-            ):
-                log.warning("DAILY LOSS LIMIT REACHED")
-                break
+        if len(prices) < 51:
+            logger.warning("Not enough market data.")
+            return
 
-            prices.append(price)
+        current_price = prices[-1]
 
-            if len(prices) >= 20:
-                short_ma = sum(list(prices)[-5:]) / 5
-                long_ma = sum(prices) / len(prices)
+        ema20 = ema(prices[-50:], 20)
+        ema50 = ema(prices[-50:], 50)
+        rsi = calculate_rsi(prices)
 
-                if btc == 0 and short_ma > long_ma:
-                    allocation = min(
-                        balance * TRADE_RISK,
-                        balance
-                    )
+        logger.info("BTC Price: %.2f USDT", current_price)
+        logger.info("EMA 20: %.2f", ema20)
+        logger.info("EMA 50: %.2f", ema50)
+        logger.info("RSI: %.2f", rsi)
 
-                    fee = allocation * FEE_RATE
-                    btc = (allocation - fee) / price
-                    balance -= allocation
-                    entry_price = price
+        balance = STARTING_BALANCE
+        risk_amount = balance * RISK_PERCENT / 100
 
-                    trades.append({
-                        "type": "BUY",
-                        "price": str(price),
-                        "fee": str(fee),
-                        "time": time.time()
-                    })
+        stop_loss = current_price * (
+            1 - STOP_LOSS_PERCENT / 100
+        )
 
-                elif btc > 0:
-                    change = (price - entry_price) / entry_price
+        take_profit = current_price * (
+            1 + TAKE_PROFIT_PERCENT / 100
+        )
 
-                    if (
-                        change <= -STOP_LOSS
-                        or change >= TAKE_PROFIT
-                    ):
-                        proceeds = btc * price
-                        fee = proceeds * FEE_RATE
-                        balance += proceeds - fee
+        if (
+            ema20 > ema50
+            and current_price > ema20
+            and 50 < rsi < 70
+        ):
+            logger.info("BUY SIGNAL DETECTED")
+            logger.info("Paper balance: %.2f USDT", balance)
+            logger.info("Risk budget: %.2f USDT", risk_amount)
+            logger.info("Stop loss: %.2f", stop_loss)
+            logger.info("Take profit: %.2f", take_profit)
 
-                        trades.append({
-                            "type": "SELL",
-                            "price": str(price),
-                            "fee": str(fee),
-                            "time": time.time()
-                        })
+        elif ema20 < ema50 or rsi < 40:
+            logger.info("SELL / EXIT SIGNAL DETECTED")
 
-                        btc = Decimal("0")
-                        entry_price = None
+        else:
+            logger.info("HOLD - WAITING FOR A BETTER SIGNAL")
 
-            save_state()
+        logger.info("Market analysis completed.")
+        logger.info("PAPER TRADING ONLY - NO REAL ORDERS.")
 
-            log.info(
-                "Price=%s | Equity=%s | Balance=%s",
-                price, equity, balance
-            )
+    except Exception:
+        logger.exception("Trading engine error")
 
-            time.sleep(60)
-
-        except Exception:
-            log.exception("Paper trading error")
-            time.sleep(60)
 
 if __name__ == "__main__":
     run_trading_engine()
+
 
 
