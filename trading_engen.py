@@ -1,131 +1,76 @@
 
+import random
 import logging
-from binance.client import Client
 
-# PAPER TRADING ONLY
-SYMBOL = "BTCUSDT"
-INTERVAL = Client.KLINE_INTERVAL_15MINUTE
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("paper_trading")
+
 STARTING_BALANCE = 100.0
-RISK_PERCENT = 1.0
-STOP_LOSS_PERCENT = 1.0
-TAKE_PROFIT_PERCENT = 2.0
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s"
-)
-logger = logging.getLogger("BTC_AI_BOT")
-
-
-def ema(values, period):
-    multiplier = 2 / (period + 1)
-    result = values[0]
-
-    for price in values[1:]:
-        result = (price * multiplier) + (
-            result * (1 - multiplier)
-        )
-
-    return result
-
-
-def calculate_rsi(prices, period=14):
-    changes = [
-        prices[i] - prices[i - 1]
-        for i in range(1, len(prices))
-    ]
-
-    gains = [max(change, 0) for change in changes]
-    losses = [max(-change, 0) for change in changes]
-
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-
-    for i in range(period, len(gains)):
-        avg_gain = (
-            avg_gain * (period - 1) + gains[i]
-        ) / period
-        avg_loss = (
-            avg_loss * (period - 1) + losses[i]
-        ) / period
-
-    if avg_loss == 0:
-        return 100.0
-
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+TRADING_PAIR = "BTC/USDT"
+FEE_RATE = 0.001
+TRADE_SIZE = 0.95
+SIMULATION_STEPS = 60
 
 
 def run_trading_engine():
-    logger.info("BTC/USDT PAPER TRADING BOT STARTED")
+    print("================================")
+    print("BTC/USDT PAPER TRADING BOT")
+    print("================================")
 
-    try:
-        # Public market data only. No trading credentials.
-        client = Client()
+    balance = STARTING_BALANCE
+    btc_held = 0.0
+    prices = [90000.0]
+    random.seed(42)
 
-        candles = client.get_klines(
-            symbol=SYMBOL,
-            interval=INTERVAL,
-            limit=100
-        )
+    print("Mode: SIMULATION ONLY")
+    print("Starting balance:", balance, "USDT")
+    print("Trading pair:", TRADING_PAIR)
 
-        # Exclude the potentially unfinished candle.
-        candles = candles[:-1]
+    for step in range(SIMULATION_STEPS):
+        change = random.uniform(-0.008, 0.008)
+        price = prices[-1] * (1 + change)
+        prices.append(price)
 
-        prices = [float(candle[4]) for candle in candles]
+        if len(prices) < 6:
+            continue
 
-        if len(prices) < 51:
-            logger.warning("Not enough market data.")
-            return
+        short_average = sum(prices[-3:]) / 3
+        long_average = sum(prices[-6:]) / 6
 
-        current_price = prices[-1]
+        if short_average > long_average and btc_held == 0:
+            investment = balance * TRADE_SIZE
+            fee = investment * FEE_RATE
+            btc_held = (investment - fee) / price
+            balance -= investment
 
-        ema20 = ema(prices[-50:], 20)
-        ema50 = ema(prices[-50:], 50)
-        rsi = calculate_rsi(prices)
+            logger.info(
+                "SIMULATED BUY: %.8f BTC at %.2f USDT",
+                btc_held, price
+            )
 
-        logger.info("BTC Price: %.2f USDT", current_price)
-        logger.info("EMA 20: %.2f", ema20)
-        logger.info("EMA 50: %.2f", ema50)
-        logger.info("RSI: %.2f", rsi)
+        elif short_average < long_average and btc_held > 0:
+            proceeds = btc_held * price
+            fee = proceeds * FEE_RATE
+            balance += proceeds - fee
+            btc_held = 0.0
 
-        balance = STARTING_BALANCE
-        risk_amount = balance * RISK_PERCENT / 100
+            logger.info(
+                "SIMULATED SELL at %.2f USDT", price
+            )
 
-        stop_loss = current_price * (
-            1 - STOP_LOSS_PERCENT / 100
-        )
+    final_price = prices[-1]
+    portfolio_value = balance + (btc_held * final_price)
 
-        take_profit = current_price * (
-            1 + TAKE_PROFIT_PERCENT / 100
-        )
-
-        if (
-            ema20 > ema50
-            and current_price > ema20
-            and 50 < rsi < 70
-        ):
-            logger.info("BUY SIGNAL DETECTED")
-            logger.info("Paper balance: %.2f USDT", balance)
-            logger.info("Risk budget: %.2f USDT", risk_amount)
-            logger.info("Stop loss: %.2f", stop_loss)
-            logger.info("Take profit: %.2f", take_profit)
-
-        elif ema20 < ema50 or rsi < 40:
-            logger.info("SELL / EXIT SIGNAL DETECTED")
-
-        else:
-            logger.info("HOLD - WAITING FOR A BETTER SIGNAL")
-
-        logger.info("Market analysis completed.")
-        logger.info("PAPER TRADING ONLY - NO REAL ORDERS.")
-
-    except Exception:
-        logger.exception("Trading engine error")
+    print("--------------------------------")
+    print("SIMULATION COMPLETE")
+    print("Final simulated price:", round(final_price, 2))
+    print("Remaining USDT:", round(balance, 2))
+    print("BTC held:", round(btc_held, 8))
+    print("Portfolio value:", round(portfolio_value, 2))
+    print("Profit/Loss:", round(portfolio_value - STARTING_BALANCE, 2))
+    print("REAL TRADES: DISABLED")
+    print("================================")
 
 
 if __name__ == "__main__":
     run_trading_engine()
-
-
-
