@@ -40,6 +40,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: binance-ai-trading-bot-debug-apk
-          path: binancebot/bin/*.apk
+          path: bin/*.apk
           if-no-files-found: error
           retention-days: 7
