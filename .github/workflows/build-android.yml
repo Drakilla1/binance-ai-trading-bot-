@@ -1,1 +1,45 @@
+name: Build Android APK
 
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "android_app/**"
+      - "buildozer.spec"
+      - ".github/workflows/build-android.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Android build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y             git zip unzip openjdk-17-jdk             python3-pip python3-setuptools             autoconf libtool pkg-config             zlib1g-dev libncurses5-dev libncursesw5-dev             libtinfo6 cmake libffi-dev libssl-dev
+
+      - name: Install Buildozer
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install buildozer cython
+
+      - name: Build debug APK
+        run: buildozer android debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: binance-ai-trading-bot-debug-apk
+          path: binancebot/bin/*.apk
+          if-no-files-found: error
+          retention-days: 7
