@@ -1,17 +1,19 @@
-
-name: Binance Bot Check
+name: Binance Bot Checks
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
+  pull_request:
   workflow_dispatch:
 
-jobs:
-  paper-trading:
-    runs-on: ubuntu-latest
+permissions:
+  contents: read
 
+jobs:
+  validate:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -19,12 +21,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: pip install python-binance
+      - name: Check Python syntax
+        run: python -m compileall -q .
 
-      - name: Run paper trading
-        env:
-          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
-          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
-          PAPER_TRADING: "true"
-        run: python main.py
+      - name: Run deterministic paper simulation
+        run: python trading_engen.py
