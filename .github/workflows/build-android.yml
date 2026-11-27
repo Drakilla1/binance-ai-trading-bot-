@@ -53,8 +53,11 @@ jobs:
             find "$HOME/.buildozer" -maxdepth 6 -type f -name sdkmanager || true
             exit 1
           fi
-          yes | "$SDKMANAGER" --licenses
-          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;37.0.0"
+          export ANDROID_HOME="$SDK_ROOT"
+          export ANDROID_SDK_ROOT="$SDK_ROOT"
+          mkdir -p "$SDK_ROOT"
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-35" "build-tools;37.0.0"
 
       - name: Build debug APK
         run: yes | buildozer android debug
