@@ -56,8 +56,14 @@ jobs:
           export ANDROID_HOME="$SDK_ROOT"
           export ANDROID_SDK_ROOT="$SDK_ROOT"
           mkdir -p "$SDK_ROOT"
-          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses
-          "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-35" "build-tools;37.0.0"
+          # sdkmanager must be given the SDK root explicitly in CI.
+          # The yes process can receive SIGPIPE after sdkmanager accepts all licenses;
+          # tolerate that pipeline status, then let package installation report real errors.
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses || true
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Build debug APK
         run: yes | buildozer android debug
