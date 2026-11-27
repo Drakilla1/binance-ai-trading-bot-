@@ -1,8 +1,5 @@
-
-
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -27,7 +24,7 @@ FEE_RATE = Decimal("0.001")
 
 STATE_FILE = Path("paper_state.json")
 
-# Public market data only. No exchange orders.
+# Public market data only. No exchange orders or trading credentials.
 client = Client("", "")
 
 
@@ -50,6 +47,9 @@ def save_state(state):
 
 
 def ema(values, period):
+    if period <= 0 or len(values) < period:
+        raise ValueError("EMA requires a positive period and enough values")
+
     result = values[0]
     alpha = Decimal("2") / Decimal(period + 1)
 
@@ -60,17 +60,25 @@ def ema(values, period):
 
 
 def rsi(values, period=14):
-    changes = [values[i] - values[i - 1]
-               for i in range(1, len(values))]
+    if period <= 0 or len(values) <= period:
+        raise ValueError("RSI requires more values than its positive period")
 
+    changes = [
+        values[i] - values[i - 1]
+        for i in range(1, len(values))
+    ]
     gains = [max(change, Decimal("0")) for change in changes]
     losses = [max(-change, Decimal("0")) for change in changes]
 
     avg_gain = sum(gains[-period:]) / Decimal(period)
     avg_loss = sum(losses[-period:]) / Decimal(period)
 
+    if avg_gain == 0 and avg_loss == 0:
+        return Decimal("50")
     if avg_loss == 0:
         return Decimal("100")
+    if avg_gain == 0:
+        return Decimal("0")
 
     rs = avg_gain / avg_loss
     return Decimal("100") - (
@@ -96,18 +104,13 @@ def market_data():
 
 def run():
     state = load_state()
-
     closes, price = market_data()
 
     balance = Decimal(state["balance"])
     btc = Decimal(state["btc"])
-    entry = (
-        Decimal(state["entry"])
-        if state["entry"] else None
-    )
+    entry = Decimal(state["entry"]) if state["entry"] else None
 
     today = datetime.now(timezone.utc).date().isoformat()
-
     if state["day"] != today:
         state["day"] = today
         state["day_start"] = str(balance + btc * price)
@@ -115,15 +118,12 @@ def run():
     day_start = Decimal(state["day_start"])
     equity = balance + btc * price
 
-    daily_loss = max(
-        Decimal("0"),
-        (day_start - equity) / day_start
+    # A zero/negative baseline must halt new entries rather than divide by zero.
+    daily_loss = (
+        max(Decimal("0"), (day_start - equity) / day_start)
+        if day_start > 0 else Decimal("1")
     )
-
-    if daily_loss >= DAILY_LOSS_LIMIT:
-        log.warning("Daily loss limit reached. No new trades.")
-        save_state(state)
-        return
+    loss_limit_reached = daily_loss >= DAILY_LOSS_LIMIT
 
     fast = ema(closes[-30:], 9)
     slow = ema(closes[-30:], 21)
@@ -134,6 +134,7 @@ def run():
         price, fast, slow, momentum, equity
     )
 
+    # Always process protective exits, even after the daily loss limit is hit.
     if btc > 0 and entry:
         change = (price - entry) / entry
 
@@ -143,27 +144,24 @@ def run():
             btc = Decimal("0")
             entry = None
 
-    elif btc == 0:
-        if fast > slow and momentum > 50:
-            risk = equity * RISK_PER_TRADE
-            position_value = min(
-                balance,
-                risk / STOP_LOSS
-            )
+    # The daily loss limit blocks new positions, never protective exits.
+    if loss_limit_reached:
+        log.warning("Daily loss limit reached. No new positions will be opened.")
+    elif btc == 0 and fast > slow and momentum > 50:
+        risk = equity * RISK_PER_TRADE
+        position_value = min(balance, risk / STOP_LOSS)
 
-            if position_value > 0:
-                fee = position_value * FEE_RATE
-                btc = (position_value - fee) / price
-                balance -= position_value
-                entry = price
-                state["trades"] += 1
-
-                log.info("SIMULATED BUY at %s", price)
+        if position_value > 0:
+            fee = position_value * FEE_RATE
+            btc = (position_value - fee) / price
+            balance -= position_value
+            entry = price
+            state["trades"] += 1
+            log.info("SIMULATED BUY at %s", price)
 
     state["balance"] = str(balance)
     state["btc"] = str(btc)
     state["entry"] = str(entry) if entry else None
-
     save_state(state)
 
     log.info(
