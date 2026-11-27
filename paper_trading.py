@@ -25,7 +25,7 @@ FEE_RATE = Decimal("0.001")
 STATE_FILE = Path("paper_state.json")
 
 # Public market data only. No exchange orders or trading credentials.
-client = Client("", "")
+client = Client("", "", ping=False)
 
 
 def load_state():
