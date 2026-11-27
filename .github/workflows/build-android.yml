@@ -38,6 +38,24 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install buildozer cython
 
+      # First invocation bootstraps the Android command-line tools and SDK.
+      # It may stop at the license prompt; the next step accepts licenses explicitly.
+      - name: Bootstrap Android SDK
+        run: |
+          yes | buildozer android debug || true
+
+      - name: Accept Android SDK licenses and install required packages
+        run: |
+          SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
+          SDKMANAGER="$(find "$SDK_ROOT" -type f -name sdkmanager | head -n 1)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "Android sdkmanager was not found under $SDK_ROOT"
+            find "$HOME/.buildozer" -maxdepth 6 -type f -name sdkmanager || true
+            exit 1
+          fi
+          yes | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;37.0.0"
+
       - name: Build debug APK
         run: yes | buildozer android debug
 
