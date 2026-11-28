@@ -1,4 +1,3 @@
-
 [app]
 
 title = Binance AI Trading Bot
@@ -17,12 +16,13 @@ fullscreen = 0
 
 android.permissions = INTERNET
 
-android.api = 35
+android.api = 36
 android.minapi = 24
 android.arch = arm64-v8a
+
+p4a.branch = develop
 
 [buildozer]
 
 log_level = 2
 warn_on_root = 1
-
