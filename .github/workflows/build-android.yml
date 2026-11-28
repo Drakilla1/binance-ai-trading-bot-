@@ -65,6 +65,12 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
+      # The SDK bootstrap can leave python-for-android's build venv half-updated.
+      # Recreate that venv cleanly before the real APK build.
+      - name: Reset python-for-android build environment
+        run: |
+          rm -rf .buildozer/android/platform/build-arm64-v8a/build/venv
+
       - name: Build debug APK
         run: yes | buildozer android debug
 
